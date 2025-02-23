@@ -1,0 +1,23 @@
+{
+  "interval": 300,
+  "awtrix_ip": "http://192.168.76.179/api/custom",
+  "plugins": [
+    {
+      "module": "youtube_plugin",
+      "class": "YouTubeApp",
+      "enabled": true,
+      "config": {
+        "api_key": "AIzaSyBghDZmd1pHm9gm7mUoT8WkVG-S7VWLFQk",
+        "channel_id": "UCGmQ7UYxfMAKYBbymrzf9-Q"
+      }
+    },
+    {
+      "module": "weather_plugin",
+      "class": "WeatherApp",
+      "enabled": true,
+      "config": {
+        "location": "Landsberg am Lech"
+      }
+    }
+  ]
+}
