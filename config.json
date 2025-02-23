@@ -1,0 +1,23 @@
+{
+  "interval": 300,
+  "awtrix_ip": "http://REDACTED_IP/api/custom",
+  "plugins": [
+    {
+      "module": "youtube_plugin",
+      "class": "YouTubeApp",
+      "enabled": true,
+      "config": {
+        "api_key": "REDACTED_GOOGLE_API_KEY",
+        "channel_id": "UCGmQ7UYxfMAKYBbymrzf9-Q"
+      }
+    },
+    {
+      "module": "weather_plugin",
+      "class": "WeatherApp",
+      "enabled": true,
+      "config": {
+        "location": "REDACTED_LOCATION"
+      }
+    }
+  ]
+}
