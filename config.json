@@ -16,7 +16,8 @@
       "class": "WeatherApp",
       "enabled": true,
       "config": {
-        "location": "Landsberg am Lech"
+        "location": "Landsberg am Lech,DE",
+        "api_key": "9272741bcc30487d77930ea29a563143"
       }
     }
   ]

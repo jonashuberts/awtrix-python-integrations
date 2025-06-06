@@ -19,7 +19,7 @@ class YouTubeApp(ClockApp):
             f"part=statistics&id={self.channel_id}&key={self.api_key}"
         )
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=5)
             data = response.json()
             if "items" in data and len(data["items"]) > 0:
                 subs = int(data["items"][0]["statistics"]["subscriberCount"])
@@ -43,9 +43,9 @@ class YouTubeApp(ClockApp):
         try:
             # Append a query parameter to uniquely identify the YouTube app.
             url = f"{self.awtrix_ip}?name=YouTubeSubs"
-            response = requests.post(url, json=payload)
+            response = requests.post(url, json=payload, timeout=5)
             if response.status_code == 200:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] AWTRIX updated successfully for YouTube!")
+                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] YouTube subscriber count updated successfully!")
             else:
                 print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error updating AWTRIX for YouTube: {response.text}")
         except Exception as e:
