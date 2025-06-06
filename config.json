@@ -16,7 +16,8 @@
       "class": "WeatherApp",
       "enabled": true,
       "config": {
-        "location": "REDACTED_LOCATION"
+        "location": "REDACTED_LOCATION,DE",
+        "api_key": "REDACTED_WEATHER_API_KEY"
       }
     }
   ]
