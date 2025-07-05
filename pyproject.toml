@@ -1,0 +1,9 @@
+[project]
+name = "awtrix"
+version = "0.1.0"
+description = "A modular Python framework for integrating and displaying data from various sources (like weather, YouTube, and productivity tools) on AWTRIX smart clocks using custom plugins."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32.4",
+]
