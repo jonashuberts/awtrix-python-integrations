@@ -1,6 +1,7 @@
 {
   "interval": 300,
-  "awtrix_ip": "http://192.168.76.179/api/custom",
+  "awtrix_ip": "http://192.168.11.45/api/custom",
+  "awtrix_ip_zuhause": "http://192.168.76.179/api/custom",
   "plugins": [
     {
       "module": "youtube_plugin",
@@ -16,7 +17,8 @@
       "class": "WeatherApp",
       "enabled": true,
       "config": {
-        "location": "Landsberg am Lech,DE",
+        "location": "Alt Moosach, DE",
+        "location_zuhause": "Landsberg am Lech, DE",
         "api_key": "9272741bcc30487d77930ea29a563143"
       }
     }
