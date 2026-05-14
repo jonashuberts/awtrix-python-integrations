@@ -55,10 +55,13 @@ class PomodoroApp(ClockApp):
         self._break_start = focus_end
         self._break_end = focus_end + timedelta(minutes=break_minutes)
         
-        # Disable auto-rotation and switch to Pomodoro
-        LOGGER.info("Configuring AWTRIX display...")
+        # Disable auto-rotation so Pomodoro stays on screen
+        LOGGER.info("Disabling auto-transition...")
         self.disable_auto_transition()
-        self.switch_to_pomodoro()
+        # Send initial payload to display Pomodoro
+        payload = self._build_payload(reference)
+        if payload:
+            self.send(payload)
 
     def stop_session(self) -> None:
         self._phase = None
@@ -169,16 +172,3 @@ class PomodoroApp(ClockApp):
             LOGGER.info("✓ Auto-transition re-enabled (status %d)", response.status_code)
         except requests.RequestException as exc:
             LOGGER.error("✗ Failed to re-enable auto-transition: %s", exc)
-
-    def switch_to_pomodoro(self) -> None:
-        """Switch display to Pomodoro app."""
-        try:
-            base_url = self.awtrix_ip.replace("/api/custom", "")
-            url = f"{base_url}/api/switch"
-            payload = {"name": "Pomodoro"}
-            LOGGER.info("Switching to Pomodoro app at %s", url)
-            response = requests.post(url, json=payload, timeout=5)
-            response.raise_for_status()
-            LOGGER.info("✓ Switched to Pomodoro app (status %d)", response.status_code)
-        except requests.RequestException as exc:
-            LOGGER.error("✗ Failed to switch to Pomodoro: %s", exc)
