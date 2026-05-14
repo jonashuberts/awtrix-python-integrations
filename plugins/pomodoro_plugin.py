@@ -45,6 +45,10 @@ class PomodoroApp(ClockApp):
         focus_end = self._next_aligned_focus_end(reference, mode_minutes)
         break_minutes = 5 if mode_minutes == 25 else 10
 
+        LOGGER.info("Starting Pomodoro %d-minute session", mode_minutes)
+        LOGGER.info("  Focus: %s → %s", reference, focus_end)
+        LOGGER.info("  Break: %s → %s", focus_end, focus_end + timedelta(minutes=break_minutes))
+
         self._phase = "focus"
         self._focus_start = reference
         self._focus_end = focus_end
@@ -52,6 +56,7 @@ class PomodoroApp(ClockApp):
         self._break_end = focus_end + timedelta(minutes=break_minutes)
         
         # Disable auto-rotation and switch to Pomodoro
+        LOGGER.info("Configuring AWTRIX display...")
         self.disable_auto_transition()
         self.switch_to_pomodoro()
 
@@ -102,16 +107,19 @@ class PomodoroApp(ClockApp):
 
         current = now or datetime.now()
         if self._phase == "focus" and self._focus_end and current >= self._focus_end:
+            LOGGER.info("Focus phase ended, switching to break")
             self._phase = "break"
             current = datetime.now()
 
         if self._phase == "break" and self._break_end and current >= self._break_end:
+            LOGGER.info("Break phase ended, session complete")
             self.stop_session()
             self.clear_display()
             return False
 
         payload = self._build_payload(current)
         if payload is not None:
+            LOGGER.debug("Tick: sending payload %s", payload)
             self.send(payload)
         return True
 
@@ -132,9 +140,9 @@ class PomodoroApp(ClockApp):
             LOGGER.debug("Sending Pomodoro update to %s: %s", url, data)
             response = requests.post(url, json=data, timeout=5)
             response.raise_for_status()
-            LOGGER.debug("Pomodoro update sent (status %d)", response.status_code)
+            LOGGER.debug("✓ Pomodoro update sent (status %d)", response.status_code)
         except requests.RequestException as exc:
-            LOGGER.error("Error sending Pomodoro update: %s", exc)
+            LOGGER.error("✗ Error sending Pomodoro update: %s", exc)
 
     def disable_auto_transition(self) -> None:
         """Disable auto app rotation during Pomodoro."""
@@ -142,11 +150,12 @@ class PomodoroApp(ClockApp):
             base_url = self.awtrix_ip.replace("/api/custom", "")
             url = f"{base_url}/api/settings"
             payload = {"ATRANS": False}
+            LOGGER.info("Disabling auto-transition at %s", url)
             response = requests.post(url, json=payload, timeout=5)
             response.raise_for_status()
-            LOGGER.info("Auto-transition disabled")
+            LOGGER.info("✓ Auto-transition disabled (status %d)", response.status_code)
         except requests.RequestException as exc:
-            LOGGER.warning("Could not disable auto-transition: %s", exc)
+            LOGGER.error("✗ Failed to disable auto-transition: %s", exc)
 
     def enable_auto_transition(self) -> None:
         """Re-enable auto app rotation after Pomodoro."""
@@ -154,11 +163,12 @@ class PomodoroApp(ClockApp):
             base_url = self.awtrix_ip.replace("/api/custom", "")
             url = f"{base_url}/api/settings"
             payload = {"ATRANS": True}
+            LOGGER.info("Re-enabling auto-transition at %s", url)
             response = requests.post(url, json=payload, timeout=5)
             response.raise_for_status()
-            LOGGER.info("Auto-transition re-enabled")
+            LOGGER.info("✓ Auto-transition re-enabled (status %d)", response.status_code)
         except requests.RequestException as exc:
-            LOGGER.warning("Could not re-enable auto-transition: %s", exc)
+            LOGGER.error("✗ Failed to re-enable auto-transition: %s", exc)
 
     def switch_to_pomodoro(self) -> None:
         """Switch display to Pomodoro app."""
@@ -166,8 +176,9 @@ class PomodoroApp(ClockApp):
             base_url = self.awtrix_ip.replace("/api/custom", "")
             url = f"{base_url}/api/switch"
             payload = {"name": "Pomodoro"}
+            LOGGER.info("Switching to Pomodoro app at %s", url)
             response = requests.post(url, json=payload, timeout=5)
             response.raise_for_status()
-            LOGGER.info("Switched to Pomodoro app")
+            LOGGER.info("✓ Switched to Pomodoro app (status %d)", response.status_code)
         except requests.RequestException as exc:
-            LOGGER.warning("Could not switch to Pomodoro: %s", exc)
+            LOGGER.error("✗ Failed to switch to Pomodoro: %s", exc)
