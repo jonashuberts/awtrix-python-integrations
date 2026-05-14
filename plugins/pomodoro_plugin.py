@@ -80,20 +80,16 @@ class PomodoroApp(ClockApp):
             seconds_left = self._seconds_left(now, self._focus_end)
             mm, ss = divmod(seconds_left, 60)
             return {
-                "name": "Pomodoro",
-                "icon": self.focus_icon,
                 "text": f"{mm:02d}:{ss:02d}",
-                "repeat": 1,
+                "hold": True,
             }
 
         if self._phase == "break" and self._break_start and self._break_end:
             seconds_left = self._seconds_left(now, self._break_end)
             mm, ss = divmod(seconds_left, 60)
             return {
-                "name": "Pomodoro",
-                "icon": self.break_icon,
                 "text": f"{mm:02d}:{ss:02d}",
-                "repeat": 1,
+                "hold": True,
             }
 
         return None
@@ -119,12 +115,12 @@ class PomodoroApp(ClockApp):
 
     def clear_display(self) -> None:
         try:
-            url = f"{self.awtrix_ip}?name=Pomodoro"
-            payload = {"name": "Pomodoro", "text": "", "repeat": 1}
-            response = requests.post(url, json=payload, timeout=5)
+            url = f"{self.awtrix_ip.replace('/api/custom', '')}/api/notify/dismiss"
+            response = requests.post(url, json={}, timeout=5)
             response.raise_for_status()
+            LOGGER.debug("Pomodoro notification dismissed")
         except requests.RequestException as exc:
-            LOGGER.warning("Error clearing Pomodoro app: %s", exc)
+            LOGGER.warning("Error dismissing Pomodoro notification: %s", exc)
 
     def update(self) -> dict | None:
         return self._build_payload(datetime.now())
@@ -133,10 +129,10 @@ class PomodoroApp(ClockApp):
         if data is None:
             return
         try:
-            url = f"{self.awtrix_ip}?name=Pomodoro"
-            LOGGER.debug("Sending Pomodoro payload to %s: %s", url, data)
+            url = f"{self.awtrix_ip.replace('/api/custom', '')}/api/notify"
+            LOGGER.debug("Sending Pomodoro notification to %s: %s", url, data)
             response = requests.post(url, json=data, timeout=5)
             response.raise_for_status()
-            LOGGER.debug("Pomodoro sent successfully (status %d)", response.status_code)
+            LOGGER.debug("Pomodoro notification sent successfully (status %d)", response.status_code)
         except requests.RequestException as exc:
-            LOGGER.error("Error sending Pomodoro data to AWTRIX: %s", exc)
+            LOGGER.error("Error sending Pomodoro notification to AWTRIX: %s", exc)
