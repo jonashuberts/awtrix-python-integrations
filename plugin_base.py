@@ -1,19 +1,15 @@
-# plugin_base.py
-class ClockApp:
-    def __init__(self):
-        # Plugins can be disabled/enabled via this flag.
+from abc import ABC, abstractmethod
+from typing import Any
+
+
+class ClockApp(ABC):
+    def __init__(self) -> None:
         self.enabled = True
 
-    def update(self):
-        """
-        Fetch or compute the data that this plugin should display.
-        Must be implemented by the subclass.
-        """
-        raise NotImplementedError("The update() method must be implemented by the plugin.")
+    @abstractmethod
+    def update(self) -> Any:
+        """Fetch or compute the plugin payload."""
 
-    def send(self, data):
-        """
-        Send the processed data to the AWTRIX clock or another endpoint.
-        Must be implemented by the subclass.
-        """
-        raise NotImplementedError("The send() method must be implemented by the plugin.")
+    @abstractmethod
+    def send(self, data: Any) -> None:
+        """Send processed data to AWTRIX."""

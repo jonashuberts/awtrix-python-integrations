@@ -1,9 +1,12 @@
 import requests
-from datetime import datetime
+import logging
 from plugin_base import ClockApp
 
+LOGGER = logging.getLogger("awtrix.weather")
+
+
 class WeatherApp(ClockApp):
-    def __init__(self, location, awtrix_ip, api_key):
+    def __init__(self, location: str, awtrix_ip: str, api_key: str):
         """
         Initialize the WeatherApp.
         :param location: e.g., "Landsberg am Lech,DE"
@@ -15,7 +18,7 @@ class WeatherApp(ClockApp):
         self.awtrix_ip = awtrix_ip
         self.api_key = api_key
 
-    def update(self):
+    def update(self) -> tuple[str, int] | None:
         """
         Fetch the current weather data from OpenWeatherMap in JSON.
         This method extracts temperature and weather description,
@@ -29,23 +32,24 @@ class WeatherApp(ClockApp):
                 "appid": self.api_key,
             }
             response = requests.get(url, params=params, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                main = data["main"]
-                weather = data["weather"][0]
-                temp = round(main["temp"])
-                description = weather["description"]  # e.g., "clear sky"
-                icon = self.get_icon(weather["icon"], description)
-                text = f"{temp}°C"
-                return text, icon
-            else:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error: HTTP {response.status_code} received from OWM.")
-                return None
-        except Exception as e:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error while retrieving weather data: {e}")
+            response.raise_for_status()
+            data = response.json()
+
+            main = data["main"]
+            weather = data["weather"][0]
+            temp = round(main["temp"])
+            description = weather["description"]
+            icon = self.get_icon(weather["icon"], description)
+            text = f"{temp}°C"
+            return text, icon
+        except requests.RequestException as exc:
+            LOGGER.error("Error retrieving weather data from OWM: %s", exc)
+            return None
+        except (KeyError, TypeError, ValueError) as exc:
+            LOGGER.error("Invalid weather payload structure: %s", exc)
             return None
 
-    def get_icon(self, owm_icon_code, description):
+    def get_icon(self, owm_icon_code: str, description: str) -> int:
         """
         Determine an AWTRIX icon based on the OpenWeatherMap icon code
         (e.g., "01d", "09n") or textual description.
@@ -79,7 +83,7 @@ class WeatherApp(ClockApp):
                 return 11428
             return 91
 
-    def send(self, weather_info):
+    def send(self, weather_info: tuple[str, int] | None) -> None:
         """
         Send the weather info (text and icon) to the AWTRIX clock.
         """
@@ -95,9 +99,7 @@ class WeatherApp(ClockApp):
         try:
             url = f"{self.awtrix_ip}?name=Weather"
             response = requests.post(url, json=payload, timeout=5)
-            if response.status_code == 200:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Weather updated successfully!")
-            else:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error sending to AWTRIX: {response.text}")
-        except Exception as e:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error sending weather data to AWTRIX: {e}")
+            response.raise_for_status()
+            LOGGER.info("Weather updated successfully.")
+        except requests.RequestException as exc:
+            LOGGER.error("Error sending weather data to AWTRIX: %s", exc)

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "awtrix"
 version = "0.1.0"
@@ -5,5 +9,14 @@ description = "A modular Python framework for integrating and displaying data fr
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "pillow>=11.3.0",
+    "pystray>=0.19.5",
     "requests>=2.32.4",
 ]
+
+[tool.uv]
+managed = true
+
+[tool.setuptools]
+packages = []
+py-modules = ["main", "plugin_base"]

@@ -1,14 +1,33 @@
 {
   "interval": 300,
-  "awtrix_ip": "http://192.168.11.45/api/custom",
-  "awtrix_ip_zuhause": "http://192.168.76.179/api/custom",
+  "default_profile": "work",
+  "profiles": [
+    {
+      "name": "work",
+      "awtrix_ip": "http://192.168.11.45/api/custom",
+      "plugin_overrides": {
+        "weather_plugin": {
+          "location": "Alt Moosach, DE"
+        }
+      }
+    },
+    {
+      "name": "home",
+      "awtrix_ip": "http://192.168.76.179/api/custom",
+      "plugin_overrides": {
+        "weather_plugin": {
+          "location": "Landsberg am Lech, DE"
+        }
+      }
+    }
+  ],
   "plugins": [
     {
       "module": "youtube_plugin",
       "class": "YouTubeApp",
       "enabled": true,
       "config": {
-        "api_key": "AIzaSyBghDZmd1pHm9gm7mUoT8WkVG-S7VWLFQk",
+        "api_key": "${YOUTUBE_API_KEY}",
         "channel_id": "UCGmQ7UYxfMAKYBbymrzf9-Q"
       }
     },
@@ -18,8 +37,16 @@
       "enabled": true,
       "config": {
         "location": "Alt Moosach, DE",
-        "location_zuhause": "Landsberg am Lech, DE",
-        "api_key": "9272741bcc30487d77930ea29a563143"
+        "api_key": "${OPENWEATHER_API_KEY}"
+      }
+    },
+    {
+      "module": "pomodoro_plugin",
+      "class": "PomodoroApp",
+      "enabled": false,
+      "config": {
+        "focus_icon": 3389,
+        "break_icon": 91
       }
     }
   ]
