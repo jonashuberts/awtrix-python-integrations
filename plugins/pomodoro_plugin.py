@@ -122,7 +122,7 @@ class PomodoroApp(ClockApp):
 
         payload = self._build_payload(current)
         if payload is not None:
-            LOGGER.debug("Tick: sending payload %s", payload)
+            LOGGER.info("Tick: %s - sending %s", self._phase, payload.get('text'))
             self.send(payload)
         return True
 
@@ -140,10 +140,9 @@ class PomodoroApp(ClockApp):
             return
         try:
             url = f"{self.awtrix_ip}?name=Pomodoro"
-            LOGGER.debug("Sending Pomodoro update to %s: %s", url, data)
             response = requests.post(url, json=data, timeout=5)
             response.raise_for_status()
-            LOGGER.debug("✓ Pomodoro update sent (status %d)", response.status_code)
+            LOGGER.info("✓ Sent to AWTRIX: %s (status %d)", data.get('text'), response.status_code)
         except requests.RequestException as exc:
             LOGGER.error("✗ Error sending Pomodoro update: %s", exc)
 
