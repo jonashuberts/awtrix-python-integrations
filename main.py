@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from plugin_base import ClockApp
+from plugins.pomodoro_plugin import PomodoroApp
 
 try:
     import pystray
@@ -25,7 +26,7 @@ except ImportError:
     ImageDraw = None
 
 LOGGER = logging.getLogger("awtrix")
-ENV_VAR_PATTERN = re.compile(r"^\$\{([A-Z0-9_]+)\}$")
+ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
 
 
 def configure_logging() -> None:
@@ -63,15 +64,24 @@ def _load_env_file() -> None:
 
 def _resolve_env_values(value: Any, path: str = "config") -> Any:
     if isinstance(value, str):
-        match = ENV_VAR_PATTERN.match(value)
-        if not match:
-            return value
+        def replace_match(match: re.Match) -> str:
+            env_var_name = match.group(1)
+            # Try original, then uppercase, then lowercase
+            resolved = os.getenv(env_var_name)
+            if resolved is None:
+                resolved = os.getenv(env_var_name.upper())
+            if resolved is None:
+                resolved = os.getenv(env_var_name.lower())
+                
+            if resolved is None:
+                raise ValueError(f"Missing environment variable {env_var_name} referenced at {path}")
+                
+            # Strip quotes if present (common in .env files)
+            if len(resolved) >= 2 and resolved.startswith(('"', "'")) and resolved.endswith(resolved[0]):
+                resolved = resolved[1:-1]
+            return resolved
 
-        env_var = match.group(1)
-        resolved = os.getenv(env_var)
-        if resolved is None:
-            raise ValueError(f"Missing environment variable {env_var} referenced at {path}")
-        return resolved
+        return ENV_VAR_PATTERN.sub(replace_match, value)
 
     if isinstance(value, list):
         return [_resolve_env_values(item, f"{path}[{idx}]") for idx, item in enumerate(value)]
@@ -85,7 +95,7 @@ def _resolve_env_values(value: Any, path: str = "config") -> Any:
 def load_config(config_file: str) -> dict[str, Any]:
     with open(config_file, "r", encoding="utf-8") as config_handle:
         config = json.load(config_handle)
-    return _resolve_env_values(config)
+    return config
 
 
 def _default_config_path() -> str:
@@ -151,7 +161,9 @@ def _choose_profile(config: dict[str, Any], forced_profile: str | None = None) -
         awtrix_ip = profile.get("awtrix_ip")
         if not isinstance(name, str) or not isinstance(awtrix_ip, str):
             continue
-        if _is_awtrix_reachable(awtrix_ip):
+        
+        resolved_ip = _resolve_env_values(awtrix_ip)
+        if _is_awtrix_reachable(resolved_ip):
             LOGGER.info("Auto-detected profile '%s' via AWTRIX reachability", name)
             return profile
 
@@ -203,7 +215,7 @@ def _apply_profile(config: dict[str, Any], forced_profile: str | None = None) ->
         plugin_cfg["config"] = plugin_config
 
     LOGGER.info("Selected profile: %s", profile_name)
-    return runtime_config, str(profile_name)
+    return _resolve_env_values(runtime_config), str(profile_name)
 
 
 def load_plugins(config: dict[str, Any]) -> list[ClockApp]:
@@ -240,20 +252,9 @@ def load_plugins(config: dict[str, Any]) -> list[ClockApp]:
             plugins.append(plugin_instance)
             LOGGER.info("Loaded plugin: %s.%s", module_name, class_name)
         except (AttributeError, ImportError, TypeError, ValueError) as exc:
-            LOGGER.error("Error loading plugin %s.%s: %s", module_name, class_name, exc)
+            LOGGER.error("Failed to load plugin %s.%s: %s", module_name, class_name, exc)
+
     return plugins
-
-
-def run_plugins_once(plugins: list[ClockApp]) -> None:
-    for plugin in plugins:
-        if not plugin.enabled:
-            continue
-        try:
-            data = plugin.update()
-            if data is not None:
-                plugin.send(data)
-        except (RuntimeError, ValueError, TypeError) as exc:
-            LOGGER.error("Plugin %s failed: %s", plugin.__class__.__name__, exc)
 
 
 class AppRuntime:
@@ -261,81 +262,80 @@ class AppRuntime:
         self.config_path = config_path
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._worker_thread = threading.Thread(target=self._worker, daemon=True)
         self._plugins: list[ClockApp] = []
-        self._interval = 300
-        self._paused = False
-        self._profile_names: list[str] = []
         self._current_profile: str | None = None
         self._forced_profile: str | None = None
+        self._paused = False
+        self._profile_names: list[str] = []
 
-    def start(self) -> None:
+        # Initial load
         self.reload()
-        self._worker_thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        self._worker_thread.join(timeout=5)
-
-    def _worker(self) -> None:
-        while not self._stop_event.is_set():
-            if not self.is_paused:
-                self.run_once()
-                self._stop_event.wait(self.interval)
-            else:
-                self._stop_event.wait(1)
-
-    def reload(self) -> None:
-        config = load_config(self.config_path)
-        profile_names = _extract_profile_names(config)
-        runtime_config, profile_name = _apply_profile(config, forced_profile=self.forced_profile)
-        interval = runtime_config.get("interval", 300)
-        if not isinstance(interval, int) or interval <= 0:
-            raise ValueError("interval must be a positive integer")
-        plugins = load_plugins(runtime_config)
-
-        with self._lock:
-            self._profile_names = profile_names
-            self._current_profile = profile_name
-            self._interval = interval
-            self._plugins = plugins
-
-        LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(plugins))
-
-    def run_once(self) -> None:
-        with self._lock:
-            plugins = list(self._plugins)
-        run_plugins_once(plugins)
-
-    @property
-    def interval(self) -> int:
-        with self._lock:
-            return self._interval
 
     @property
     def profile_names(self) -> list[str]:
-        with self._lock:
-            return list(self._profile_names)
+        return self._profile_names
 
     @property
     def current_profile(self) -> str | None:
-        with self._lock:
-            return self._current_profile
+        return self._current_profile
 
     @property
     def forced_profile(self) -> str | None:
-        with self._lock:
-            return self._forced_profile
-
-    def set_forced_profile(self, profile_name: str | None) -> None:
-        with self._lock:
-            self._forced_profile = profile_name
-        self.reload()
+        return self._forced_profile
 
     @property
     def is_paused(self) -> bool:
+        return self._paused
+
+    def set_forced_profile(self, name: str | None) -> None:
         with self._lock:
-            return self._paused
+            self._forced_profile = name
+        self.reload()
+
+    def reload(self) -> None:
+        with self._lock:
+            config = load_config(self.config_path)
+            self._profile_names = _extract_profile_names(config)
+            runtime_config, profile_name = _apply_profile(config, forced_profile=self._forced_profile)
+
+            # Special case for PomodoroApp: it might need direct access to the runtime
+            # or custom control. For now, we load it like any other plugin.
+            self._plugins = load_plugins(runtime_config)
+            self._current_profile = profile_name
+        LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(self._plugins))
+
+    def run_once(self) -> None:
+        if self.is_paused:
+            return
+
+        with self._lock:
+            plugins = list(self._plugins)
+
+        for plugin in plugins:
+            if self._stop_event.is_set():
+                break
+            try:
+                plugin.send_data()
+            except Exception as exc:
+                LOGGER.error("Plugin %s failed: %s", plugin.__class__.__name__, exc)
+
+    def start(self) -> None:
+        def _loop():
+            while not self._stop_event.is_set():
+                self.run_once()
+                # Sleep in small increments to be responsive to stop_event
+                for _ in range(300):
+                    if self._stop_event.is_set():
+                        break
+                    time.sleep(1)
+
+        self._stop_thread = threading.Thread(target=_loop, daemon=True)
+        self._stop_thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if hasattr(self, "_stop_thread"):
+            self._stop_thread.join(timeout=2.0)
 
     def toggle_pause(self) -> None:
         with self._lock:
@@ -343,29 +343,24 @@ class AppRuntime:
             paused = self._paused
         LOGGER.info("Runtime %s", "paused" if paused else "resumed")
 
-def _create_tray_image() -> Any:
-    # 64x64 Canvas with transparent background
-    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+def _create_tray_image(size: int = 64, color: tuple[int, int, int, int] = (255, 255, 255, 255)) -> Any:
+    # Canvas with transparent background
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    # Pixel size of 6 gives it a nice, crisp look without being too massive.
-    pixel_size = 6
+    # Pixel size scales with the image size.
+    # The matrix is 4x6.
+    pixel_size = max(1, size // 10)
     
-    # The matrix from your image is exactly 4 columns wide and 6 rows high.
     matrix_w = 4
     matrix_h = 6
     
-    # Calculate dimensions
     grid_w = matrix_w * pixel_size
     grid_h = matrix_h * pixel_size
     
-    # Center it perfectly in the 64x64 space
-    offset_x = (64 - grid_w) // 2
-    offset_y = (64 - grid_h) // 2
+    offset_x = (size - grid_w) // 2
+    offset_y = (size - grid_h) // 2
     
-    ink = (255, 255, 255, 255) # Standard macOS menu bar white
-
-    # This is the exact 1:1 pixel mapping from your provided image
     matrix = [
         "1110",
         "1001",
@@ -378,16 +373,55 @@ def _create_tray_image() -> Any:
     for y, row in enumerate(matrix):
         for x, cell in enumerate(row):
             if cell == "1":
-                # Calculate coordinates for each block
                 left = offset_x + (x * pixel_size)
                 top = offset_y + (y * pixel_size)
-                # Draw sharp squares
                 draw.rectangle(
                     (left, top, left + pixel_size - 1, top + pixel_size - 1),
-                    fill=ink,
+                    fill=color,
                 )
                 
     return image
+
+
+def _is_login_item() -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        # Check if an app with our name is in login items
+        script = 'tell application "System Events" to get count of (every login item whose name is "AWTRIX")'
+        output = subprocess.check_output(["osascript", "-e", script], text=True).strip()
+        return output == "1"
+    except Exception:
+        return False
+
+
+def _toggle_login_item(icon: Any, _: Any) -> None:
+    if sys.platform != "darwin":
+        return
+    
+    is_set = _is_login_item()
+    if not is_set:
+        # Get the path to the current app bundle
+        app_path = None
+        if getattr(sys, "frozen", False):
+            # When running as .app bundle, sys.executable is inside Contents/MacOS/
+            # We want the path to the .app itself
+            curr = Path(sys.executable).resolve()
+            for parent in curr.parents:
+                if parent.suffix == ".app":
+                    app_path = parent
+                    break
+        
+        if app_path:
+            script = f'tell application "System Events" to make login item at end with properties {{path:"{app_path}", name:"AWTRIX", hidden:false}}'
+            subprocess.run(["osascript", "-e", script], check=False)
+        else:
+            LOGGER.error("Could not determine .app path for login item")
+    else:
+        script = 'tell application "System Events" to delete (every login item whose name is "AWTRIX")'
+        subprocess.run(["osascript", "-e", script], check=False)
+    
+    icon.update_menu()
 
 
 def _open_path(path: Path) -> None:
@@ -471,6 +505,8 @@ def run_tray_app(runtime: AppRuntime) -> None:
         pystray.MenuItem("Reload config", _reload),
         pystray.MenuItem("Pause updates", _toggle_pause, checked=_is_paused),
         pystray.MenuItem("Profile", profile_menu),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Start at Login", _toggle_login_item, checked=lambda _: _is_login_item()),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open config.json", _open_config),
         pystray.MenuItem("Open .env", _open_env),

@@ -10,13 +10,17 @@ APP_NAME="AWTRIX"
 DIST_DIR="dist"
 BUILD_DIR="build"
 
+echo "Generating modern app icon..."
+uv run --with Pillow scripts/generate_icon.py
+
 echo "Building ${APP_NAME}.app with PyInstaller..."
-uv run --with pyinstaller pyinstaller \
+uv run --with pyinstaller --with Pillow pyinstaller \
   --noconfirm \
   --clean \
   --windowed \
   --onedir \
   --name "${APP_NAME}" \
+  --icon "app_icon.png" \
   --hidden-import pystray._darwin \
   --hidden-import PIL.Image \
   --hidden-import PIL.ImageDraw \
@@ -27,8 +31,6 @@ uv run --with pyinstaller pyinstaller \
 mkdir -p "${DIST_DIR}/${APP_NAME}" "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS"
 cp -f config.json "${DIST_DIR}/${APP_NAME}/config.json"
 cp -f config.json "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/config.json"
-cp -f .env.example "${DIST_DIR}/${APP_NAME}/.env.example"
-cp -f .env.example "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/.env.example"
 
 if [[ -f ".env" ]]; then
   cp -f .env "${DIST_DIR}/${APP_NAME}/.env"
@@ -38,4 +40,3 @@ fi
 echo
 echo "Build complete."
 echo "App: ${DIST_DIR}/${APP_NAME}.app"
-echo "CLI binary: ${DIST_DIR}/${APP_NAME}/${APP_NAME}"
