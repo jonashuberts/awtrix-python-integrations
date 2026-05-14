@@ -37,7 +37,7 @@ class YouTubeApp(ClockApp):
         """
         payload = {
             "name": "YouTube Subs",  
-            "icon": "youtube",     
+            "icon": "3389",     
             "text": str(subs)        
         }
         try:

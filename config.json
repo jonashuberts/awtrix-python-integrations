@@ -1,6 +1,7 @@
 {
   "interval": 300,
   "awtrix_ip": "http://REDACTED_IP/api/custom",
+  "awtrix_ip_zuhause": "http://REDACTED_IP/api/custom",
   "plugins": [
     {
       "module": "youtube_plugin",
@@ -16,7 +17,8 @@
       "class": "WeatherApp",
       "enabled": true,
       "config": {
-        "location": "REDACTED_LOCATION,DE",
+        "location": "REDACTED_LOCATION",
+        "location_zuhause": "REDACTED_LOCATION",
         "api_key": "REDACTED_WEATHER_API_KEY"
       }
     }
