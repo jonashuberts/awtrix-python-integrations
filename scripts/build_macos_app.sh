@@ -22,7 +22,6 @@ uv run --with pyinstaller pyinstaller \
   --hidden-import PIL.ImageDraw \
   --hidden-import plugins.youtube_plugin \
   --hidden-import plugins.weather_plugin \
-  --hidden-import plugins.pomodoro_plugin \
   main.py
 
 mkdir -p "${DIST_DIR}/${APP_NAME}" "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS"

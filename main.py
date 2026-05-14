@@ -15,7 +15,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from plugin_base import ClockApp
-from plugins.pomodoro_plugin import PomodoroApp
 
 try:
     import pystray
@@ -269,8 +268,6 @@ class AppRuntime:
         self._profile_names: list[str] = []
         self._current_profile: str | None = None
         self._forced_profile: str | None = None
-        self._pomodoro: PomodoroApp | None = None
-        self._pomodoro_mode: int | None = None
 
     def start(self) -> None:
         self.reload()
@@ -283,11 +280,8 @@ class AppRuntime:
     def _worker(self) -> None:
         while not self._stop_event.is_set():
             if not self.is_paused:
-                if self.tick_pomodoro():
-                    self._stop_event.wait(1)
-                else:
-                    self.run_once()
-                    self._stop_event.wait(self.interval)
+                self.run_once()
+                self._stop_event.wait(self.interval)
             else:
                 self._stop_event.wait(1)
 
@@ -299,30 +293,16 @@ class AppRuntime:
         if not isinstance(interval, int) or interval <= 0:
             raise ValueError("interval must be a positive integer")
         plugins = load_plugins(runtime_config)
-        pomodoro_cfg: dict[str, Any] = {}
-        for plugin_cfg in runtime_config.get("plugins", []):
-            if plugin_cfg.get("module") == "pomodoro_plugin":
-                pomodoro_cfg = dict(plugin_cfg.get("config", {}))
-                break
-
-        awtrix_ip = runtime_config.get("awtrix_ip")
-        if not isinstance(awtrix_ip, str):
-            raise ValueError("awtrix_ip must be configured")
-        pomodoro = PomodoroApp(awtrix_ip=awtrix_ip, **pomodoro_cfg)
-        filtered_plugins = [p for p in plugins if not isinstance(p, PomodoroApp)]
 
         with self._lock:
             self._profile_names = profile_names
             self._current_profile = profile_name
             self._interval = interval
-            self._plugins = filtered_plugins
-            self._pomodoro = pomodoro
+            self._plugins = plugins
 
-        LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(filtered_plugins))
+        LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(plugins))
 
     def run_once(self) -> None:
-        if self.is_pomodoro_active:
-            return
         with self._lock:
             plugins = list(self._plugins)
         run_plugins_once(plugins)
@@ -362,56 +342,6 @@ class AppRuntime:
             self._paused = not self._paused
             paused = self._paused
         LOGGER.info("Runtime %s", "paused" if paused else "resumed")
-
-    @property
-    def is_pomodoro_active(self) -> bool:
-        with self._lock:
-            return self._pomodoro is not None and self._pomodoro.is_active
-
-    @property
-    def pomodoro_status(self) -> str:
-        with self._lock:
-            if self._pomodoro is None or not self._pomodoro.is_active:
-                return "inactive"
-            phase = self._pomodoro.phase or "unknown"
-            mode = self._pomodoro_mode or 0
-        return f"{phase}:{mode}"
-
-    def start_pomodoro(self, mode_minutes: int) -> None:
-        if mode_minutes not in {25, 50}:
-            raise ValueError("Pomodoro mode must be 25 or 50")
-        with self._lock:
-            pomodoro = self._pomodoro
-        if pomodoro is None:
-            raise RuntimeError("Pomodoro is not initialized")
-        pomodoro.start_aligned_session(mode_minutes)
-        with self._lock:
-            self._pomodoro_mode = mode_minutes
-        LOGGER.info("Started Pomodoro %s mode", mode_minutes)
-
-    def stop_pomodoro(self) -> None:
-        with self._lock:
-            pomodoro = self._pomodoro
-        if pomodoro is None:
-            return
-        pomodoro.stop_session()
-        pomodoro.clear_display()
-        with self._lock:
-            self._pomodoro_mode = None
-        LOGGER.info("Stopped Pomodoro")
-
-    def tick_pomodoro(self) -> bool:
-        with self._lock:
-            pomodoro = self._pomodoro
-        if pomodoro is None or not pomodoro.is_active:
-            return False
-        still_active = pomodoro.tick()
-        if not still_active:
-            with self._lock:
-                self._pomodoro_mode = None
-            LOGGER.info("Pomodoro completed; normal apps resumed")
-        return still_active
-
 
 def _create_tray_image() -> Any:
     # 64x64 Canvas with transparent background
@@ -473,8 +403,7 @@ def run_tray_app(runtime: AppRuntime) -> None:
     def _title(_: Any) -> str:
         profile = runtime.current_profile or "auto"
         mode = "paused" if runtime.is_paused else "running"
-        pomodoro = runtime.pomodoro_status
-        return f"AWTRIX ({profile}, {mode}, {pomodoro})"
+        return f"AWTRIX ({profile}, {mode})"
 
     def _reload(_: Any, __: Any) -> None:
         runtime.reload()
@@ -500,21 +429,6 @@ def run_tray_app(runtime: AppRuntime) -> None:
             else:
                 env_path.write_text("", encoding="utf-8")
         _open_path(env_path.resolve())
-
-    def _start_pomodoro_25(icon: Any, __: Any) -> None:
-        runtime.start_pomodoro(25)
-        icon.update_menu()
-
-    def _start_pomodoro_50(icon: Any, __: Any) -> None:
-        runtime.start_pomodoro(50)
-        icon.update_menu()
-
-    def _stop_pomodoro(icon: Any, __: Any) -> None:
-        runtime.stop_pomodoro()
-        icon.update_menu()
-
-    def _pomodoro_active(_: Any) -> bool:
-        return runtime.is_pomodoro_active
 
     def _set_auto(icon: Any, __: Any) -> None:
         runtime.set_forced_profile(None)
@@ -552,10 +466,6 @@ def run_tray_app(runtime: AppRuntime) -> None:
 
     menu = pystray.Menu(
         pystray.MenuItem(_title, None, enabled=False),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Start Pomodoro 25", _start_pomodoro_25),
-        pystray.MenuItem("Start Pomodoro 50", _start_pomodoro_50),
-        pystray.MenuItem("Stop Pomodoro", _stop_pomodoro, enabled=_pomodoro_active),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Run now", _run_once),
         pystray.MenuItem("Reload config", _reload),
