@@ -1,52 +1,53 @@
-# plugins/youtube_plugin.py
 import requests
-from datetime import datetime
+import logging
 from plugin_base import ClockApp
 
+LOGGER = logging.getLogger("awtrix.youtube")
+
+
 class YouTubeApp(ClockApp):
-    def __init__(self, api_key, channel_id, awtrix_ip):
+    def __init__(self, api_key: str, channel_id: str, awtrix_ip: str):
         super().__init__()
         self.api_key = api_key
         self.channel_id = channel_id
         self.awtrix_ip = awtrix_ip
 
-    def update(self):
-        """
-        Fetch the YouTube subscriber count.
-        """
+    def update(self) -> int | None:
         url = (
             f"https://www.googleapis.com/youtube/v3/channels?"
             f"part=statistics&id={self.channel_id}&key={self.api_key}"
         )
         try:
             response = requests.get(url, timeout=5)
+            response.raise_for_status()
             data = response.json()
-            if "items" in data and len(data["items"]) > 0:
-                subs = int(data["items"][0]["statistics"]["subscriberCount"])
-                return subs
-            else:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error: Could not fetch subscriber count. Check API key and Channel ID.")
+
+            items = data.get("items", [])
+            if not items:
+                LOGGER.error("YouTube API returned no channel stats. Check channel_id and api_key.")
                 return None
-        except Exception as e:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error fetching YouTube data: {e}")
+
+            return int(items[0]["statistics"]["subscriberCount"])
+        except requests.RequestException as exc:
+            LOGGER.error("Error fetching YouTube data: %s", exc)
+            return None
+        except (KeyError, TypeError, ValueError) as exc:
+            LOGGER.error("Invalid YouTube API response payload: %s", exc)
             return None
 
-    def send(self, subs):
-        """
-        Send the subscriber count to the AWTRIX clock.
-        """
+    def send(self, subs: int | None) -> None:
+        if subs is None:
+            return
+
         payload = {
-            "name": "YouTube Subs",  
-            "icon": "3389",     
-            "text": str(subs)        
+            "name": "YouTube Subs",
+            "icon": "youtube",
+            "text": str(subs),
         }
         try:
-            # Append a query parameter to uniquely identify the YouTube app.
             url = f"{self.awtrix_ip}?name=YouTubeSubs"
             response = requests.post(url, json=payload, timeout=5)
-            if response.status_code == 200:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] YouTube subscriber count updated successfully!")
-            else:
-                print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error updating AWTRIX for YouTube: {response.text}")
-        except Exception as e:
-            print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Error sending YouTube data to AWTRIX: {e}")
+            response.raise_for_status()
+            LOGGER.info("YouTube subscriber count updated.")
+        except requests.RequestException as exc:
+            LOGGER.error("Error sending YouTube data to AWTRIX: %s", exc)

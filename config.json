@@ -1,14 +1,33 @@
 {
   "interval": 300,
-  "awtrix_ip": "http://REDACTED_IP/api/custom",
-  "awtrix_ip_zuhause": "http://REDACTED_IP/api/custom",
+  "default_profile": "work",
+  "profiles": [
+    {
+      "name": "work",
+      "awtrix_ip": "http://REDACTED_IP/api/custom",
+      "plugin_overrides": {
+        "weather_plugin": {
+          "location": "REDACTED_LOCATION"
+        }
+      }
+    },
+    {
+      "name": "home",
+      "awtrix_ip": "http://REDACTED_IP/api/custom",
+      "plugin_overrides": {
+        "weather_plugin": {
+          "location": "REDACTED_LOCATION"
+        }
+      }
+    }
+  ],
   "plugins": [
     {
       "module": "youtube_plugin",
       "class": "YouTubeApp",
       "enabled": true,
       "config": {
-        "api_key": "REDACTED_GOOGLE_API_KEY",
+        "api_key": "${YOUTUBE_API_KEY}",
         "channel_id": "UCGmQ7UYxfMAKYBbymrzf9-Q"
       }
     },
@@ -18,8 +37,16 @@
       "enabled": true,
       "config": {
         "location": "REDACTED_LOCATION",
-        "location_zuhause": "REDACTED_LOCATION",
-        "api_key": "REDACTED_WEATHER_API_KEY"
+        "api_key": "${OPENWEATHER_API_KEY}"
+      }
+    },
+    {
+      "module": "pomodoro_plugin",
+      "class": "PomodoroApp",
+      "enabled": false,
+      "config": {
+        "focus_icon": 3389,
+        "break_icon": 91
       }
     }
   ]
