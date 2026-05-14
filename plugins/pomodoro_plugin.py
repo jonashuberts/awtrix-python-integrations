@@ -50,6 +50,10 @@ class PomodoroApp(ClockApp):
         self._focus_end = focus_end
         self._break_start = focus_end
         self._break_end = focus_end + timedelta(minutes=break_minutes)
+        
+        # Disable auto-rotation and switch to Pomodoro
+        self.disable_auto_transition()
+        self.switch_to_pomodoro()
 
     def stop_session(self) -> None:
         self._phase = None
@@ -81,7 +85,6 @@ class PomodoroApp(ClockApp):
             mm, ss = divmod(seconds_left, 60)
             return {
                 "text": f"{mm:02d}:{ss:02d}",
-                "hold": True,
             }
 
         if self._phase == "break" and self._break_start and self._break_end:
@@ -89,7 +92,6 @@ class PomodoroApp(ClockApp):
             mm, ss = divmod(seconds_left, 60)
             return {
                 "text": f"{mm:02d}:{ss:02d}",
-                "hold": True,
             }
 
         return None
@@ -115,12 +117,9 @@ class PomodoroApp(ClockApp):
 
     def clear_display(self) -> None:
         try:
-            url = f"{self.awtrix_ip.replace('/api/custom', '')}/api/notify/dismiss"
-            response = requests.post(url, json={}, timeout=5)
-            response.raise_for_status()
-            LOGGER.debug("Pomodoro notification dismissed")
-        except requests.RequestException as exc:
-            LOGGER.warning("Error dismissing Pomodoro notification: %s", exc)
+            self.enable_auto_transition()
+        except Exception as exc:
+            LOGGER.warning("Error in clear_display: %s", exc)
 
     def update(self) -> dict | None:
         return self._build_payload(datetime.now())
@@ -129,10 +128,46 @@ class PomodoroApp(ClockApp):
         if data is None:
             return
         try:
-            url = f"{self.awtrix_ip.replace('/api/custom', '')}/api/notify"
-            LOGGER.debug("Sending Pomodoro notification to %s: %s", url, data)
+            url = f"{self.awtrix_ip}?name=Pomodoro"
+            LOGGER.debug("Sending Pomodoro update to %s: %s", url, data)
             response = requests.post(url, json=data, timeout=5)
             response.raise_for_status()
-            LOGGER.debug("Pomodoro notification sent successfully (status %d)", response.status_code)
+            LOGGER.debug("Pomodoro update sent (status %d)", response.status_code)
         except requests.RequestException as exc:
-            LOGGER.error("Error sending Pomodoro notification to AWTRIX: %s", exc)
+            LOGGER.error("Error sending Pomodoro update: %s", exc)
+
+    def disable_auto_transition(self) -> None:
+        """Disable auto app rotation during Pomodoro."""
+        try:
+            base_url = self.awtrix_ip.replace("/api/custom", "")
+            url = f"{base_url}/api/settings"
+            payload = {"ATRANS": False}
+            response = requests.post(url, json=payload, timeout=5)
+            response.raise_for_status()
+            LOGGER.info("Auto-transition disabled")
+        except requests.RequestException as exc:
+            LOGGER.warning("Could not disable auto-transition: %s", exc)
+
+    def enable_auto_transition(self) -> None:
+        """Re-enable auto app rotation after Pomodoro."""
+        try:
+            base_url = self.awtrix_ip.replace("/api/custom", "")
+            url = f"{base_url}/api/settings"
+            payload = {"ATRANS": True}
+            response = requests.post(url, json=payload, timeout=5)
+            response.raise_for_status()
+            LOGGER.info("Auto-transition re-enabled")
+        except requests.RequestException as exc:
+            LOGGER.warning("Could not re-enable auto-transition: %s", exc)
+
+    def switch_to_pomodoro(self) -> None:
+        """Switch display to Pomodoro app."""
+        try:
+            base_url = self.awtrix_ip.replace("/api/custom", "")
+            url = f"{base_url}/api/switch"
+            payload = {"name": "Pomodoro"}
+            response = requests.post(url, json=payload, timeout=5)
+            response.raise_for_status()
+            LOGGER.info("Switched to Pomodoro app")
+        except requests.RequestException as exc:
+            LOGGER.warning("Could not switch to Pomodoro: %s", exc)
