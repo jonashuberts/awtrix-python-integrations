@@ -39,15 +39,6 @@
         "location": "Alt Moosach, DE",
         "api_key": "${OPENWEATHER_API_KEY}"
       }
-    },
-    {
-      "module": "pomodoro_plugin",
-      "class": "PomodoroApp",
-      "enabled": false,
-      "config": {
-        "focus_icon": 3389,
-        "break_icon": 91
-      }
     }
   ]
 }
