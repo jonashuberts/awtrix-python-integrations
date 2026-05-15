@@ -4,7 +4,7 @@
 [![uv](https://img.shields.io/badge/package%20manager-uv-6f42c1)](https://github.com/astral-sh/uv)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#run-modes)
 
-Lightweight, plugin-based AWTRIX integration app for **weather**, **YouTube subscriber count**, and profile-aware multi-location setups.  
+Lightweight, plugin-based AWTRIX integration app for **weather**, **YouTube subscriber count**, and **Pomodoro timer**.  
 Optimized for **macOS tray/menu-bar background usage**.
 
 ## Why this project
@@ -14,8 +14,26 @@ Optimized for **macOS tray/menu-bar background usage**.
 - Multi-profile auto-detection (home/work/...)
 - `.env` secret support
 - Works as a tray app or headless runner
+- macOS features: **Start at Login** support and dynamic tray icon
 
-## Quick start
+## Installation (macOS App)
+
+1. Download the `AWTRIX-macOS.zip` from the [Releases](https://github.com/jonashuberts/awtrix-python-integrations/releases) page.
+2. Unzip and move `AWTRIX.app` to your `/Applications` folder.
+
+### macOS Security & Privacy
+
+Since this app is not signed by a registered Apple Developer, macOS Gatekeeper will block it upon first launch.
+
+**To fix this, run the following command in your terminal:**
+
+```bash
+xattr -d com.apple.quarantine /Applications/AWTRIX.app
+```
+
+*Alternatively: Right-click (or Control-click) the app and select **Open** from the menu, then click **Open** again in the dialog box.*
+
+## Quick start (Development)
 
 1. Install dependencies:
 
@@ -95,8 +113,3 @@ AWTRIX_TRAY=1
 
 - Project quick reference (official-doc based): `docs/awtrix-api-relevant.md`
 - Official source on device: `http://<awtrix-ip>/` → **API** → **MQTT / HTTP API**
-
-## Known limitation (AWTRIX2)
-
-Real-time Pomodoro countdown support was intentionally removed after integration tests.  
-Initial send/stop worked, but live timer text updates were not reliable enough for a stable user experience.
