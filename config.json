@@ -1,0 +1,44 @@
+{
+  "interval": 300,
+  "default_profile": "work",
+  "profiles": [
+    {
+      "name": "work",
+      "awtrix_ip": "http://${AWTRIX_IP_WORK}/api/custom",
+      "plugin_overrides": {
+        "weather_plugin": {
+          "location": "${LOCATION_WORK}"
+        }
+      }
+    },
+    {
+      "name": "home",
+      "awtrix_ip": "http://${AWTRIX_IP_HOME}/api/custom",
+      "plugin_overrides": {
+        "weather_plugin": {
+          "location": "${LOCATION_HOME}"
+        }
+      }
+    }
+  ],
+  "plugins": [
+    {
+      "module": "youtube_plugin",
+      "class": "YouTubeApp",
+      "enabled": true,
+      "config": {
+        "api_key": "${YOUTUBE_API_KEY}",
+        "channel_id": "UCGmQ7UYxfMAKYBbymrzf9-Q"
+      }
+    },
+    {
+      "module": "weather_plugin",
+      "class": "WeatherApp",
+      "enabled": true,
+      "config": {
+        "location": "${LOCATION_WORK}",
+        "api_key": "${OPENWEATHER_API_KEY}"
+      }
+    }
+  ]
+}

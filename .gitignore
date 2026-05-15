@@ -1,0 +1,23 @@
+.qodo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+
+# Local secrets/overrides
+.env
+config.local.json
+
+# Build artifacts
+build/
+dist/
+*.spec
+*.egg-info/
