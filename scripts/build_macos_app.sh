@@ -32,9 +32,9 @@ mkdir -p "${DIST_DIR}/${APP_NAME}" "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS"
 cp -f config.json "${DIST_DIR}/${APP_NAME}/config.json"
 cp -f config.json "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/config.json"
 
-if [[ -f ".env" ]]; then
-  cp -f .env "${DIST_DIR}/${APP_NAME}/.env"
-  cp -f .env "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/.env"
+if [[ -f ".env.example" ]]; then
+  cp -f .env.example "${DIST_DIR}/${APP_NAME}/.env"
+  cp -f .env.example "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/.env"
 fi
 
 echo
