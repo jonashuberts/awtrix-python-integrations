@@ -33,9 +33,14 @@ cp -f config.json "${DIST_DIR}/${APP_NAME}/config.json"
 cp -f config.json "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/config.json"
 
 if [[ -f ".env.example" ]]; then
-  cp -f .env.example "${DIST_DIR}/${APP_NAME}/.env"
-  cp -f .env.example "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/.env"
+  cp -f .env.example "${DIST_DIR}/${APP_NAME}/.env.example"
+  cp -f .env.example "${DIST_DIR}/${APP_NAME}.app/Contents/MacOS/.env.example"
 fi
+
+# Make app run as menu-bar agent only (no Dock icon)
+PLIST_FILE="${DIST_DIR}/${APP_NAME}.app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Delete :LSUIElement" "${PLIST_FILE}" >/dev/null 2>&1 || true
+/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "${PLIST_FILE}"
 
 echo
 echo "Build complete."

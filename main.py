@@ -15,7 +15,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from plugin_base import ClockApp
-from plugins.pomodoro_plugin import PomodoroApp
 
 try:
     import pystray
@@ -43,8 +42,28 @@ def _resource_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _app_support_dir() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "AWTRIX"
+    return Path.home() / ".awtrix"
+
+
+def _default_env_path() -> Path:
+    return _app_support_dir() / ".env"
+
+
 def _load_env_file() -> None:
-    candidates = [_resource_dir() / ".env", Path.cwd() / ".env"]
+    candidates: list[Path] = []
+    env_override = os.getenv("AWTRIX_ENV")
+    if env_override:
+        candidates.append(Path(env_override).expanduser())
+    candidates.extend(
+        [
+            _default_env_path(),
+            Path.cwd() / ".env",
+            _resource_dir() / ".env",
+        ]
+    )
     for env_file in candidates:
         if not env_file.exists():
             continue
@@ -95,14 +114,37 @@ def _resolve_env_values(value: Any, path: str = "config") -> Any:
 def load_config(config_file: str) -> dict[str, Any]:
     with open(config_file, "r", encoding="utf-8") as config_handle:
         config = json.load(config_handle)
-    return config
+    return _resolve_env_values(config)
 
 
 def _default_config_path() -> str:
+    user_config = _app_support_dir() / "config.json"
+    if user_config.exists():
+        return str(user_config)
     bundled_path = _resource_dir() / "config.json"
     if bundled_path.exists():
         return str(bundled_path)
     return "config.json"
+
+
+def _ensure_user_runtime_files() -> None:
+    if not getattr(sys, "frozen", False):
+        return
+
+    support_dir = _app_support_dir()
+    support_dir.mkdir(parents=True, exist_ok=True)
+
+    user_config = support_dir / "config.json"
+    bundled_config = _resource_dir() / "config.json"
+    if not user_config.exists() and bundled_config.exists():
+        user_config.write_text(bundled_config.read_text(encoding="utf-8"), encoding="utf-8")
+        LOGGER.info("Created user config at %s", user_config)
+
+    user_env = _default_env_path()
+    bundled_env_example = _resource_dir() / ".env.example"
+    if not user_env.exists() and bundled_env_example.exists():
+        user_env.write_text(bundled_env_example.read_text(encoding="utf-8"), encoding="utf-8")
+        LOGGER.info("Created user env template at %s", user_env)
 
 
 def _base_url(url: str) -> str:
@@ -162,8 +204,7 @@ def _choose_profile(config: dict[str, Any], forced_profile: str | None = None) -
         if not isinstance(name, str) or not isinstance(awtrix_ip, str):
             continue
         
-        resolved_ip = _resolve_env_values(awtrix_ip)
-        if _is_awtrix_reachable(resolved_ip):
+        if _is_awtrix_reachable(awtrix_ip):
             LOGGER.info("Auto-detected profile '%s' via AWTRIX reachability", name)
             return profile
 
@@ -215,7 +256,7 @@ def _apply_profile(config: dict[str, Any], forced_profile: str | None = None) ->
         plugin_cfg["config"] = plugin_config
 
     LOGGER.info("Selected profile: %s", profile_name)
-    return _resolve_env_values(runtime_config), str(profile_name)
+    return runtime_config, str(profile_name)
 
 
 def load_plugins(config: dict[str, Any]) -> list[ClockApp]:
@@ -267,6 +308,7 @@ class AppRuntime:
         self._forced_profile: str | None = None
         self._paused = False
         self._profile_names: list[str] = []
+        self._interval = 300
 
         # Initial load
         self.reload()
@@ -297,11 +339,13 @@ class AppRuntime:
             config = load_config(self.config_path)
             self._profile_names = _extract_profile_names(config)
             runtime_config, profile_name = _apply_profile(config, forced_profile=self._forced_profile)
+            interval = runtime_config.get("interval", 300)
+            if not isinstance(interval, int) or interval <= 0:
+                raise ValueError("interval must be a positive integer")
 
-            # Special case for PomodoroApp: it might need direct access to the runtime
-            # or custom control. For now, we load it like any other plugin.
             self._plugins = load_plugins(runtime_config)
             self._current_profile = profile_name
+            self._interval = interval
         LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(self._plugins))
 
     def run_once(self) -> None:
@@ -315,8 +359,10 @@ class AppRuntime:
             if self._stop_event.is_set():
                 break
             try:
-                plugin.send_data()
-            except Exception as exc:
+                data = plugin.update()
+                if data is not None:
+                    plugin.send(data)
+            except (RuntimeError, ValueError, TypeError) as exc:
                 LOGGER.error("Plugin %s failed: %s", plugin.__class__.__name__, exc)
 
     def start(self) -> None:
@@ -324,7 +370,8 @@ class AppRuntime:
             while not self._stop_event.is_set():
                 self.run_once()
                 # Sleep in small increments to be responsive to stop_event
-                for _ in range(300):
+                interval = self._interval
+                for _ in range(interval):
                     if self._stop_event.is_set():
                         break
                     time.sleep(1)
@@ -413,7 +460,7 @@ def _toggle_login_item(icon: Any, _: Any) -> None:
                     break
         
         if app_path:
-            script = f'tell application "System Events" to make login item at end with properties {{path:"{app_path}", name:"AWTRIX", hidden:false}}'
+            script = f'tell application "System Events" to make login item at end with properties {{path:"{app_path}", name:"AWTRIX", hidden:true}}'
             subprocess.run(["osascript", "-e", script], check=False)
         else:
             LOGGER.error("Could not determine .app path for login item")
@@ -455,7 +502,8 @@ def run_tray_app(runtime: AppRuntime) -> None:
         _open_path(Path(runtime.config_path).resolve())
 
     def _open_env(_: Any, __: Any) -> None:
-        env_path = _resource_dir() / ".env"
+        env_path = _default_env_path()
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         if not env_path.exists():
             example = _resource_dir() / ".env.example"
             if example.exists():
@@ -525,6 +573,7 @@ def run_headless(runtime: AppRuntime) -> None:
 
 def main() -> None:
     configure_logging()
+    _ensure_user_runtime_files()
     _load_env_file()
     config_path = os.getenv("AWTRIX_CONFIG", _default_config_path())
     runtime = AppRuntime(config_path=config_path)

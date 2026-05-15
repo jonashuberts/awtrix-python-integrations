@@ -4,7 +4,7 @@
 [![uv](https://img.shields.io/badge/package%20manager-uv-6f42c1)](https://github.com/astral-sh/uv)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#run-modes)
 
-Lightweight, plugin-based AWTRIX integration app for **weather**, **YouTube subscriber count**, and **Pomodoro timer**.  
+Lightweight, plugin-based AWTRIX integration app for **weather** and **YouTube subscriber count**.  
 Optimized for **macOS tray/menu-bar background usage**.
 
 ## Why this project
@@ -20,6 +20,13 @@ Optimized for **macOS tray/menu-bar background usage**.
 
 1. Download the `AWTRIX-macOS.zip` from the [Releases](https://github.com/jonashuberts/awtrix-python-integrations/releases) page.
 2. Unzip and move `AWTRIX.app` to your `/Applications` folder.
+
+At first launch, runtime files are created in:
+
+- `~/Library/Application Support/AWTRIX/config.json`
+- `~/Library/Application Support/AWTRIX/.env`
+
+Sensitive values are expected there and are not bundled as live `.env` secrets.
 
 ### macOS Security & Privacy
 
