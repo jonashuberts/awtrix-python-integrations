@@ -345,9 +345,13 @@ class AppRuntime:
         self._awtrix_ip: str | None = None
 
         # Connection state
-        self._status = ConnectionStatus.RECONNECTING
+        self._status = ConnectionStatus.CONNECTED
         self._status_detail: str = "Starting up…"
         self._unreachable_logged = False  # suppress log spam
+        self._consecutive_failures: int = 0
+        # How many consecutive probe failures before the icon turns orange.
+        # At 15s per probe that's ~1 minute of being unreachable.
+        self._failure_threshold: int = 4
 
         # Reconnect probe interval (seconds)
         reconnect_env = os.getenv("AWTRIX_RECONNECT_INTERVAL")
@@ -426,7 +430,12 @@ class AppRuntime:
     # ------------------------------------------------------------------
 
     def _probe_and_update_status(self) -> bool:
-        """Probe AWTRIX reachability and update status. Returns True if reachable."""
+        """Silently probe AWTRIX reachability and update status.
+
+        The icon only turns orange after _failure_threshold consecutive failures
+        so normal healthy operation never causes a colour flash.
+        Returns True if reachable.
+        """
         awtrix_ip = self._awtrix_ip
         if not awtrix_ip:
             with self._lock:
@@ -437,26 +446,36 @@ class AppRuntime:
         reachable = _is_awtrix_reachable(awtrix_ip)
         with self._lock:
             if reachable:
-                if self._status != ConnectionStatus.CONNECTED:
-                    LOGGER.info("AWTRIX is reachable at %s", awtrix_ip)
+                previously_unreachable = self._status == ConnectionStatus.UNREACHABLE
+                self._consecutive_failures = 0
                 self._status = ConnectionStatus.CONNECTED
                 self._status_detail = f"Connected to {awtrix_ip}"
                 self._unreachable_logged = False
+                if previously_unreachable:
+                    LOGGER.info("AWTRIX is reachable again at %s", awtrix_ip)
             else:
-                if not self._unreachable_logged:
-                    LOGGER.warning("AWTRIX is unreachable at %s — will retry every %ds",
-                                   awtrix_ip, self._reconnect_interval)
-                    self._unreachable_logged = True
-                self._status = ConnectionStatus.UNREACHABLE
-                self._status_detail = f"Cannot reach {awtrix_ip} — retrying…"
+                self._consecutive_failures += 1
+                # Only flip the icon after sustained failures
+                if self._consecutive_failures >= self._failure_threshold:
+                    if not self._unreachable_logged:
+                        LOGGER.warning(
+                            "AWTRIX unreachable at %s for %d consecutive probes — "
+                            "retrying every %ds",
+                            awtrix_ip,
+                            self._consecutive_failures,
+                            self._reconnect_interval,
+                        )
+                        self._unreachable_logged = True
+                    self._status = ConnectionStatus.UNREACHABLE
+                    self._status_detail = f"Cannot reach {awtrix_ip} — retrying…"
+                # else: keep current status (white) while within grace period
         return reachable
 
     def reconnect_now(self) -> None:
         """Force an immediate connectivity probe. If reachable, run update cycle."""
         LOGGER.info("Reconnect requested by user")
         with self._lock:
-            self._status = ConnectionStatus.RECONNECTING
-            self._status_detail = "Reconnecting…"
+            self._consecutive_failures = 0
             self._unreachable_logged = False
         # Re-run profile auto-detection to pick up network changes
         self.reload()
@@ -491,20 +510,24 @@ class AppRuntime:
                     plugin.send(data)
                 any_success = True
             except requests.exceptions.ConnectionError:
-                if not self._unreachable_logged:
-                    LOGGER.warning("AWTRIX connection lost during update — will retry")
-                    self._unreachable_logged = True
-                with self._lock:
-                    self._status = ConnectionStatus.UNREACHABLE
-                    self._status_detail = f"Connection lost — retrying every {self._reconnect_interval}s…"
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._failure_threshold:
+                    if not self._unreachable_logged:
+                        LOGGER.warning("AWTRIX connection lost during update — will retry")
+                        self._unreachable_logged = True
+                    with self._lock:
+                        self._status = ConnectionStatus.UNREACHABLE
+                        self._status_detail = f"Connection lost — retrying every {self._reconnect_interval}s…"
                 break  # no point continuing with other plugins
             except requests.exceptions.Timeout:
-                if not self._unreachable_logged:
-                    LOGGER.warning("AWTRIX timed out during update — will retry")
-                    self._unreachable_logged = True
-                with self._lock:
-                    self._status = ConnectionStatus.UNREACHABLE
-                    self._status_detail = f"Timed out — retrying every {self._reconnect_interval}s…"
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._failure_threshold:
+                    if not self._unreachable_logged:
+                        LOGGER.warning("AWTRIX timed out during update — will retry")
+                        self._unreachable_logged = True
+                    with self._lock:
+                        self._status = ConnectionStatus.UNREACHABLE
+                        self._status_detail = f"Timed out — retrying every {self._reconnect_interval}s…"
                 break
             except (RuntimeError, ValueError, TypeError) as exc:
                 LOGGER.error("Plugin %s failed: %s", plugin.__class__.__name__, exc)
@@ -536,18 +559,16 @@ class AppRuntime:
                     time.sleep(1)
 
                 current_status = self._status
-                if current_status in (ConnectionStatus.UNREACHABLE, ConnectionStatus.RECONNECTING):
+                if current_status == ConnectionStatus.UNREACHABLE:
                     LOGGER.debug("Connectivity monitor probing AWTRIX…")
-                    with self._lock:
-                        self._status = ConnectionStatus.RECONNECTING
-                        self._status_detail = "Reconnecting…"
                     # Re-run profile selection in case we switched networks
                     self.reload()
                     if self._status == ConnectionStatus.CONNECTED:
                         LOGGER.info("AWTRIX came back online — resuming updates")
                         self.run_once()
-                elif current_status == ConnectionStatus.CONNECTED:
-                    # Still connected? Do a light probe to detect drop-outs
+                else:
+                    # Silently probe to catch drop-outs; no colour change unless
+                    # failures cross the threshold inside _probe_and_update_status
                     self._probe_and_update_status()
 
         self._stop_thread = threading.Thread(target=_update_loop, daemon=True, name="awtrix-update")
@@ -576,20 +597,18 @@ class AppRuntime:
 
 # Icon colors for each connection state
 _STATUS_COLORS: dict[ConnectionStatus, tuple[int, int, int, int]] = {
-    ConnectionStatus.CONNECTED:    (255, 255, 255, 255),  # white
-    ConnectionStatus.UNREACHABLE:  (255, 140,   0, 255),  # orange
-    ConnectionStatus.RECONNECTING: (255, 200,  50, 255),  # amber
-    ConnectionStatus.PAUSED:       (140, 140, 140, 255),  # grey
-    ConnectionStatus.ERROR:        (220,  50,  50, 255),  # red
+    ConnectionStatus.CONNECTED:   (255, 255, 255, 255),  # white
+    ConnectionStatus.UNREACHABLE: (255, 140,   0, 255),  # orange
+    ConnectionStatus.PAUSED:      (140, 140, 140, 255),  # grey
+    ConnectionStatus.ERROR:       (220,  50,  50, 255),  # red
 }
 
 # Status labels shown in the tray menu
 _STATUS_LABELS: dict[ConnectionStatus, str] = {
-    ConnectionStatus.CONNECTED:    "🟢 Connected",
-    ConnectionStatus.UNREACHABLE:  "🔴 Unreachable — retrying…",
-    ConnectionStatus.RECONNECTING: "🟡 Reconnecting…",
-    ConnectionStatus.PAUSED:       "⏸ Paused",
-    ConnectionStatus.ERROR:        "⚠️ Error",
+    ConnectionStatus.CONNECTED:   "🟢 Connected",
+    ConnectionStatus.UNREACHABLE: "🔴 Unreachable — retrying…",
+    ConnectionStatus.PAUSED:      "⏸ Paused",
+    ConnectionStatus.ERROR:       "⚠️ Error",
 }
 
 
