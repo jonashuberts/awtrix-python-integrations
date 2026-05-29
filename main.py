@@ -1,6 +1,7 @@
 import importlib
 import json
 import logging
+import logging.handlers
 import os
 import re
 import subprocess
@@ -9,6 +10,7 @@ import threading
 import time
 from collections.abc import Mapping
 from copy import deepcopy
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -27,13 +29,44 @@ except ImportError:
 LOGGER = logging.getLogger("awtrix")
 ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
 
+# Default interval (seconds) for background connectivity probe
+_DEFAULT_RECONNECT_INTERVAL = 15
+
+
+class ConnectionStatus(str, Enum):
+    """Live connection state of the AWTRIX device."""
+
+    CONNECTED = "connected"       # Device is reachable, last update succeeded
+    UNREACHABLE = "unreachable"   # Device not responding
+    RECONNECTING = "reconnecting" # Background probe actively trying to reconnect
+    PAUSED = "paused"             # User paused updates
+    ERROR = "error"               # Config / plugin load error
+
 
 def configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    date_fmt = "%Y-%m-%d %H:%M:%S"
+
+    # Console handler
+    logging.basicConfig(level=logging.INFO, format=log_format, datefmt=date_fmt)
+
+    # Rotating file handler — max 2 MB, keep 3 backups
+    if sys.platform == "darwin":
+        log_dir = Path.home() / "Library" / "Logs" / "AWTRIX"
+    else:
+        log_dir = Path.home() / ".awtrix" / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_dir / "awtrix.log",
+            maxBytes=2 * 1024 * 1024,  # 2 MB
+            backupCount=3,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_fmt))
+        logging.getLogger().addHandler(file_handler)
+    except OSError as exc:
+        logging.warning("Could not create log file: %s", exc)
 
 
 def _resource_dir() -> Path:
@@ -309,9 +342,26 @@ class AppRuntime:
         self._paused = False
         self._profile_names: list[str] = []
         self._interval = 300
+        self._awtrix_ip: str | None = None
+
+        # Connection state
+        self._status = ConnectionStatus.RECONNECTING
+        self._status_detail: str = "Starting up…"
+        self._unreachable_logged = False  # suppress log spam
+
+        # Reconnect probe interval (seconds)
+        reconnect_env = os.getenv("AWTRIX_RECONNECT_INTERVAL")
+        try:
+            self._reconnect_interval = int(reconnect_env) if reconnect_env else _DEFAULT_RECONNECT_INTERVAL
+        except ValueError:
+            self._reconnect_interval = _DEFAULT_RECONNECT_INTERVAL
 
         # Initial load
         self.reload()
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def profile_names(self) -> list[str]:
@@ -329,32 +379,109 @@ class AppRuntime:
     def is_paused(self) -> bool:
         return self._paused
 
+    @property
+    def status(self) -> ConnectionStatus:
+        return self._status
+
+    @property
+    def status_detail(self) -> str:
+        return self._status_detail
+
+    # ------------------------------------------------------------------
+    # Profile / config management
+    # ------------------------------------------------------------------
+
     def set_forced_profile(self, name: str | None) -> None:
         with self._lock:
             self._forced_profile = name
         self.reload()
 
     def reload(self) -> None:
-        with self._lock:
-            config = load_config(self.config_path)
-            self._profile_names = _extract_profile_names(config)
-            runtime_config, profile_name = _apply_profile(config, forced_profile=self._forced_profile)
-            interval = runtime_config.get("interval", 300)
-            if not isinstance(interval, int) or interval <= 0:
-                raise ValueError("interval must be a positive integer")
+        try:
+            with self._lock:
+                config = load_config(self.config_path)
+                self._profile_names = _extract_profile_names(config)
+                runtime_config, profile_name = _apply_profile(config, forced_profile=self._forced_profile)
+                interval = runtime_config.get("interval", 300)
+                if not isinstance(interval, int) or interval <= 0:
+                    raise ValueError("interval must be a positive integer")
 
-            self._plugins = load_plugins(runtime_config)
-            self._current_profile = profile_name
-            self._interval = interval
-        LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(self._plugins))
+                self._plugins = load_plugins(runtime_config)
+                self._current_profile = profile_name
+                self._interval = interval
+                self._awtrix_ip = runtime_config.get("awtrix_ip")
+
+            LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(self._plugins))
+
+            # After a successful reload, probe immediately to set initial status
+            self._probe_and_update_status()
+        except Exception as exc:
+            LOGGER.error("Reload failed: %s", exc)
+            with self._lock:
+                self._status = ConnectionStatus.ERROR
+                self._status_detail = str(exc)
+
+    # ------------------------------------------------------------------
+    # Connectivity probing
+    # ------------------------------------------------------------------
+
+    def _probe_and_update_status(self) -> bool:
+        """Probe AWTRIX reachability and update status. Returns True if reachable."""
+        awtrix_ip = self._awtrix_ip
+        if not awtrix_ip:
+            with self._lock:
+                self._status = ConnectionStatus.ERROR
+                self._status_detail = "No awtrix_ip configured"
+            return False
+
+        reachable = _is_awtrix_reachable(awtrix_ip)
+        with self._lock:
+            if reachable:
+                if self._status != ConnectionStatus.CONNECTED:
+                    LOGGER.info("AWTRIX is reachable at %s", awtrix_ip)
+                self._status = ConnectionStatus.CONNECTED
+                self._status_detail = f"Connected to {awtrix_ip}"
+                self._unreachable_logged = False
+            else:
+                if not self._unreachable_logged:
+                    LOGGER.warning("AWTRIX is unreachable at %s — will retry every %ds",
+                                   awtrix_ip, self._reconnect_interval)
+                    self._unreachable_logged = True
+                self._status = ConnectionStatus.UNREACHABLE
+                self._status_detail = f"Cannot reach {awtrix_ip} — retrying…"
+        return reachable
+
+    def reconnect_now(self) -> None:
+        """Force an immediate connectivity probe. If reachable, run update cycle."""
+        LOGGER.info("Reconnect requested by user")
+        with self._lock:
+            self._status = ConnectionStatus.RECONNECTING
+            self._status_detail = "Reconnecting…"
+            self._unreachable_logged = False
+        # Re-run profile auto-detection to pick up network changes
+        self.reload()
+        if self._status == ConnectionStatus.CONNECTED:
+            self.run_once()
+
+    # ------------------------------------------------------------------
+    # Update loop
+    # ------------------------------------------------------------------
 
     def run_once(self) -> None:
         if self.is_paused:
+            with self._lock:
+                self._status = ConnectionStatus.PAUSED
+                self._status_detail = "Updates paused by user"
             return
 
         with self._lock:
             plugins = list(self._plugins)
 
+        # Fast path: if we know device is unreachable, skip and return
+        if self._status == ConnectionStatus.UNREACHABLE:
+            return
+
+        any_success = False
         for plugin in plugins:
             if self._stop_event.is_set():
                 break
@@ -362,11 +489,34 @@ class AppRuntime:
                 data = plugin.update()
                 if data is not None:
                     plugin.send(data)
+                any_success = True
+            except requests.exceptions.ConnectionError:
+                if not self._unreachable_logged:
+                    LOGGER.warning("AWTRIX connection lost during update — will retry")
+                    self._unreachable_logged = True
+                with self._lock:
+                    self._status = ConnectionStatus.UNREACHABLE
+                    self._status_detail = f"Connection lost — retrying every {self._reconnect_interval}s…"
+                break  # no point continuing with other plugins
+            except requests.exceptions.Timeout:
+                if not self._unreachable_logged:
+                    LOGGER.warning("AWTRIX timed out during update — will retry")
+                    self._unreachable_logged = True
+                with self._lock:
+                    self._status = ConnectionStatus.UNREACHABLE
+                    self._status_detail = f"Timed out — retrying every {self._reconnect_interval}s…"
+                break
             except (RuntimeError, ValueError, TypeError) as exc:
                 LOGGER.error("Plugin %s failed: %s", plugin.__class__.__name__, exc)
 
+        if any_success:
+            with self._lock:
+                self._status = ConnectionStatus.CONNECTED
+                self._status_detail = f"Connected to {self._awtrix_ip or 'device'}"
+                self._unreachable_logged = False
+
     def start(self) -> None:
-        def _loop():
+        def _update_loop():
             while not self._stop_event.is_set():
                 self.run_once()
                 # Sleep in small increments to be responsive to stop_event
@@ -376,19 +526,72 @@ class AppRuntime:
                         break
                     time.sleep(1)
 
-        self._stop_thread = threading.Thread(target=_loop, daemon=True)
+        def _connectivity_monitor():
+            """Periodically probe AWTRIX; when unreachable it tries to reconnect."""
+            while not self._stop_event.is_set():
+                # Wait for the reconnect interval in small steps
+                for _ in range(self._reconnect_interval):
+                    if self._stop_event.is_set():
+                        return
+                    time.sleep(1)
+
+                current_status = self._status
+                if current_status in (ConnectionStatus.UNREACHABLE, ConnectionStatus.RECONNECTING):
+                    LOGGER.debug("Connectivity monitor probing AWTRIX…")
+                    with self._lock:
+                        self._status = ConnectionStatus.RECONNECTING
+                        self._status_detail = "Reconnecting…"
+                    # Re-run profile selection in case we switched networks
+                    self.reload()
+                    if self._status == ConnectionStatus.CONNECTED:
+                        LOGGER.info("AWTRIX came back online — resuming updates")
+                        self.run_once()
+                elif current_status == ConnectionStatus.CONNECTED:
+                    # Still connected? Do a light probe to detect drop-outs
+                    self._probe_and_update_status()
+
+        self._stop_thread = threading.Thread(target=_update_loop, daemon=True, name="awtrix-update")
+        self._monitor_thread = threading.Thread(target=_connectivity_monitor, daemon=True, name="awtrix-monitor")
         self._stop_thread.start()
+        self._monitor_thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
-        if hasattr(self, "_stop_thread"):
-            self._stop_thread.join(timeout=2.0)
+        for attr in ("_stop_thread", "_monitor_thread"):
+            thread = getattr(self, attr, None)
+            if thread is not None:
+                thread.join(timeout=2.0)
 
     def toggle_pause(self) -> None:
         with self._lock:
             self._paused = not self._paused
             paused = self._paused
+            if paused:
+                self._status = ConnectionStatus.PAUSED
+                self._status_detail = "Updates paused by user"
+        if not paused:
+            # Resume: re-probe to get correct status
+            self._probe_and_update_status()
         LOGGER.info("Runtime %s", "paused" if paused else "resumed")
+
+# Icon colors for each connection state
+_STATUS_COLORS: dict[ConnectionStatus, tuple[int, int, int, int]] = {
+    ConnectionStatus.CONNECTED:    (255, 255, 255, 255),  # white
+    ConnectionStatus.UNREACHABLE:  (255, 140,   0, 255),  # orange
+    ConnectionStatus.RECONNECTING: (255, 200,  50, 255),  # amber
+    ConnectionStatus.PAUSED:       (140, 140, 140, 255),  # grey
+    ConnectionStatus.ERROR:        (220,  50,  50, 255),  # red
+}
+
+# Status labels shown in the tray menu
+_STATUS_LABELS: dict[ConnectionStatus, str] = {
+    ConnectionStatus.CONNECTED:    "🟢 Connected",
+    ConnectionStatus.UNREACHABLE:  "🔴 Unreachable — retrying…",
+    ConnectionStatus.RECONNECTING: "🟡 Reconnecting…",
+    ConnectionStatus.PAUSED:       "⏸ Paused",
+    ConnectionStatus.ERROR:        "⚠️ Error",
+}
+
 
 def _create_tray_image(size: int = 64, color: tuple[int, int, int, int] = (255, 255, 255, 255)) -> Any:
     # Canvas with transparent background
@@ -398,16 +601,16 @@ def _create_tray_image(size: int = 64, color: tuple[int, int, int, int] = (255, 
     # Pixel size scales with the image size.
     # The matrix is 4x6.
     pixel_size = max(1, size // 10)
-    
+
     matrix_w = 4
     matrix_h = 6
-    
+
     grid_w = matrix_w * pixel_size
     grid_h = matrix_h * pixel_size
-    
+
     offset_x = (size - grid_w) // 2
     offset_y = (size - grid_h) // 2
-    
+
     matrix = [
         "1110",
         "1001",
@@ -416,7 +619,7 @@ def _create_tray_image(size: int = 64, color: tuple[int, int, int, int] = (255, 
         "1001",
         "1001",
     ]
-    
+
     for y, row in enumerate(matrix):
         for x, cell in enumerate(row):
             if cell == "1":
@@ -426,7 +629,7 @@ def _create_tray_image(size: int = 64, color: tuple[int, int, int, int] = (255, 
                     (left, top, left + pixel_size - 1, top + pixel_size - 1),
                     fill=color,
                 )
-                
+
     return image
 
 
@@ -495,10 +698,29 @@ def run_tray_app(runtime: AppRuntime) -> None:
     runtime.start()
     tray_image = _create_tray_image()
 
+    # Track the last rendered status so we only redraw the icon on changes
+    _last_rendered_status: list[ConnectionStatus] = [ConnectionStatus.RECONNECTING]
+
     def _title(_: Any) -> str:
         profile = runtime.current_profile or "auto"
-        mode = "paused" if runtime.is_paused else "running"
-        return f"AWTRIX ({profile}, {mode})"
+        return f"AWTRIX · {profile}"
+
+    def _status_item(_: Any) -> str:
+        """One-line status: emoji + detail (e.g. 🟢 Connected to 192.168.1.5)."""
+        emoji = _STATUS_LABELS.get(runtime.status, str(runtime.status))
+        detail = runtime.status_detail
+        if detail:
+            return f"{emoji} — {detail}"
+        return emoji
+
+    def _refresh_icon(icon: Any) -> None:
+        """Redraw the tray icon if connection status changed."""
+        current = runtime.status
+        if current != _last_rendered_status[0]:
+            color = _STATUS_COLORS.get(current, (255, 255, 255, 255))
+            icon.icon = _create_tray_image(color=color)
+            _last_rendered_status[0] = current
+            icon.update_menu()
 
     def _reload(_: Any, __: Any) -> None:
         runtime.reload()
@@ -506,8 +728,16 @@ def run_tray_app(runtime: AppRuntime) -> None:
     def _run_once(_: Any, __: Any) -> None:
         runtime.run_once()
 
-    def _toggle_pause(_: Any, __: Any) -> None:
+    def _reconnect_now(icon: Any, __: Any) -> None:
+        threading.Thread(target=lambda: _do_reconnect(icon), daemon=True).start()
+
+    def _do_reconnect(icon: Any) -> None:
+        runtime.reconnect_now()
+        _refresh_icon(icon)
+
+    def _toggle_pause(icon: Any, __: Any) -> None:
         runtime.toggle_pause()
+        _refresh_icon(icon)
 
     def _is_paused(_: Any) -> bool:
         return runtime.is_paused
@@ -562,8 +792,10 @@ def run_tray_app(runtime: AppRuntime) -> None:
 
     menu = pystray.Menu(
         pystray.MenuItem(_title, None, enabled=False),
+        pystray.MenuItem(_status_item, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Run now", _run_once),
+        pystray.MenuItem("Reconnect now", _reconnect_now),
         pystray.MenuItem("Reload config", _reload),
         pystray.MenuItem("Pause updates", _toggle_pause, checked=_is_paused),
         pystray.MenuItem("Profile", profile_menu),
@@ -576,6 +808,15 @@ def run_tray_app(runtime: AppRuntime) -> None:
         pystray.MenuItem("Quit", _quit),
     )
     icon = pystray.Icon("awtrix", tray_image, "AWTRIX", menu)
+
+    # Background thread that updates the icon color as status changes
+    def _icon_watcher():
+        while not runtime._stop_event.is_set():
+            _refresh_icon(icon)
+            time.sleep(3)  # check every 3 seconds
+
+    threading.Thread(target=_icon_watcher, daemon=True, name="awtrix-icon-watcher").start()
+
     icon.run()
 
 
