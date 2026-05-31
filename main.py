@@ -208,7 +208,11 @@ def _extract_profile_names(config: dict[str, Any]) -> list[str]:
     return names
 
 
-def _choose_profile(config: dict[str, Any], forced_profile: str | None = None) -> dict[str, Any] | None:
+def _choose_profile(
+    config: dict[str, Any],
+    forced_profile: str | None = None,
+    suppress_fallback_warning: bool = False,
+) -> dict[str, Any] | None:
     profiles = config.get("profiles")
     if not isinstance(profiles, list) or not profiles:
         return None
@@ -236,7 +240,7 @@ def _choose_profile(config: dict[str, Any], forced_profile: str | None = None) -
         awtrix_ip = profile.get("awtrix_ip")
         if not isinstance(name, str) or not isinstance(awtrix_ip, str):
             continue
-        
+
         if _is_awtrix_reachable(awtrix_ip):
             LOGGER.info("Auto-detected profile '%s' via AWTRIX reachability", name)
             return profile
@@ -246,22 +250,32 @@ def _choose_profile(config: dict[str, Any], forced_profile: str | None = None) -
         selected = profiles_by_name.get(default_profile_name)
         if selected is None:
             raise ValueError(f"default_profile '{default_profile_name}' does not exist in config profiles")
-        LOGGER.warning(
-            "No profile auto-detected. Falling back to default_profile '%s'",
-            default_profile_name,
-        )
+        if not suppress_fallback_warning:
+            LOGGER.warning(
+                "No profile auto-detected. Falling back to default_profile '%s'",
+                default_profile_name,
+            )
         return selected
 
     first_profile = profiles[0]
     if isinstance(first_profile, Mapping):
-        LOGGER.warning("No profile auto-detected. Falling back to first profile entry.")
+        if not suppress_fallback_warning:
+            LOGGER.warning("No profile auto-detected. Falling back to first profile entry.")
         return first_profile
     return None
 
 
-def _apply_profile(config: dict[str, Any], forced_profile: str | None = None) -> tuple[dict[str, Any], str | None]:
+def _apply_profile(
+    config: dict[str, Any],
+    forced_profile: str | None = None,
+    suppress_fallback_warning: bool = False,
+) -> tuple[dict[str, Any], str | None]:
     runtime_config = deepcopy(config)
-    selected_profile = _choose_profile(runtime_config, forced_profile=forced_profile)
+    selected_profile = _choose_profile(
+        runtime_config,
+        forced_profile=forced_profile,
+        suppress_fallback_warning=suppress_fallback_warning,
+    )
     if selected_profile is None:
         return runtime_config, None
 
@@ -400,12 +414,16 @@ class AppRuntime:
             self._forced_profile = name
         self.reload()
 
-    def reload(self) -> None:
+    def reload(self, suppress_fallback_warning: bool = False) -> None:
         try:
             with self._lock:
                 config = load_config(self.config_path)
                 self._profile_names = _extract_profile_names(config)
-                runtime_config, profile_name = _apply_profile(config, forced_profile=self._forced_profile)
+                runtime_config, profile_name = _apply_profile(
+                    config,
+                    forced_profile=self._forced_profile,
+                    suppress_fallback_warning=suppress_fallback_warning,
+                )
                 interval = runtime_config.get("interval", 300)
                 if not isinstance(interval, int) or interval <= 0:
                     raise ValueError("interval must be a positive integer")
@@ -415,7 +433,10 @@ class AppRuntime:
                 self._interval = interval
                 self._awtrix_ip = runtime_config.get("awtrix_ip")
 
-            LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(self._plugins))
+            # Only log reload if profile actually changed
+            if profile_name != getattr(self, "_last_logged_profile", object()):
+                LOGGER.info("Runtime reloaded (profile=%s, plugins=%d)", profile_name, len(self._plugins))
+                self._last_logged_profile = profile_name
 
             # After a successful reload, probe immediately to set initial status
             self._probe_and_update_status()
@@ -561,8 +582,12 @@ class AppRuntime:
                 current_status = self._status
                 if current_status == ConnectionStatus.UNREACHABLE:
                     LOGGER.debug("Connectivity monitor probing AWTRIX…")
-                    # Re-run profile selection in case we switched networks
-                    self.reload()
+                    # Reset failure counter so we get a fresh grace period on each attempt
+                    with self._lock:
+                        self._consecutive_failures = 0
+                        self._unreachable_logged = False
+                    # Re-run profile selection silently (suppress repeated fallback warnings)
+                    self.reload(suppress_fallback_warning=True)
                     if self._status == ConnectionStatus.CONNECTED:
                         LOGGER.info("AWTRIX came back online — resuming updates")
                         self.run_once()
