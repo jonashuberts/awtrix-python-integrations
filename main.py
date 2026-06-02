@@ -4,6 +4,7 @@ import logging
 import logging.handlers
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -185,8 +186,29 @@ def _base_url(url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
 
 
+def _resolve_mdns_url(url: str) -> str:
+    """Resolve .local mDNS hostnames to their current IP before making HTTP
+    requests. macOS resolves these correctly via socket.getaddrinfo() but
+    libraries like requests/curl can fail when the hostname contains underscores
+    (technically invalid in DNS). Replaces the hostname with the resolved IP so
+    the connection always succeeds.
+    """
+    parsed = urlsplit(url)
+    hostname = parsed.hostname or ""
+    if not hostname.endswith(".local"):
+        return url
+    try:
+        results = socket.getaddrinfo(hostname, parsed.port or 80, socket.AF_INET, socket.SOCK_STREAM)
+        ip = results[0][4][0]
+        # Rebuild the URL with the resolved IP instead of the hostname
+        netloc = ip if not parsed.port else f"{ip}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    except OSError:
+        return url  # fall back to original if resolution fails
+
+
 def _is_awtrix_reachable(awtrix_ip: str, timeout_seconds: float = 1.5) -> bool:
-    probe_url = _base_url(awtrix_ip) + "/api/custom"
+    probe_url = _resolve_mdns_url(_base_url(awtrix_ip) + "/api/custom")
     try:
         response = requests.get(probe_url, timeout=timeout_seconds)
         return response.status_code < 500

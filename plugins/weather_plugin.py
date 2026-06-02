@@ -1,8 +1,25 @@
 import requests
 import logging
+import socket
+from urllib.parse import urlsplit, urlunsplit
 from plugin_base import ClockApp
 
 LOGGER = logging.getLogger("awtrix.weather")
+
+
+def _resolve_mdns_url(url: str) -> str:
+    """Resolve .local mDNS hostnames to IP before connecting."""
+    parsed = urlsplit(url)
+    hostname = parsed.hostname or ""
+    if not hostname.endswith(".local"):
+        return url
+    try:
+        results = socket.getaddrinfo(hostname, parsed.port or 80, socket.AF_INET, socket.SOCK_STREAM)
+        ip = results[0][4][0]
+        netloc = ip if not parsed.port else f"{ip}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+    except OSError:
+        return url
 
 
 class WeatherApp(ClockApp):
@@ -97,7 +114,7 @@ class WeatherApp(ClockApp):
             "repeat": 60
         }
         try:
-            url = f"{self.awtrix_ip}?name=Weather"
+            url = _resolve_mdns_url(f"{self.awtrix_ip}?name=Weather")
             response = requests.post(url, json=payload, timeout=5)
             response.raise_for_status()
             LOGGER.info("Weather updated successfully.")
