@@ -23,82 +23,100 @@ def _resolve_mdns_url(url: str) -> str:
 
 
 class WeatherApp(ClockApp):
-    def __init__(self, location: str, awtrix_ip: str, api_key: str):
+    def __init__(self, location: str, awtrix_ip: str, api_key: str = ""):
         """
         Initialize the WeatherApp.
-        :param location: e.g., "REDACTED_LOCATION,DE"
+        :param location: e.g., "Alt Moosach, DE"
         :param awtrix_ip: URL for the AWTRIX Custom API Endpoint
-        :param api_key: Your OpenWeatherMap API key
+        :param api_key: Kept for compatibility but unused as Open-Meteo is keyless
         """
         super().__init__()
         self.location = location
         self.awtrix_ip = awtrix_ip
         self.api_key = api_key
+        self.lat = None
+        self.lon = None
+
+    def _resolve_coordinates(self) -> bool:
+        if self.lat is not None and self.lon is not None:
+            return True
+        try:
+            # Open-Meteo geocoding works best with clean names (e.g. "Alt Moosach" instead of "Alt Moosach, DE")
+            query = self.location
+            if "," in query:
+                query = query.split(",", 1)[0].strip()
+
+            url = "https://geocoding-api.open-meteo.com/v1/search"
+            params = {
+                "name": query,
+                "count": 1,
+                "format": "json"
+            }
+            response = requests.get(url, params=params, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            results = data.get("results")
+            if results:
+                self.lat = results[0]["latitude"]
+                self.lon = results[0]["longitude"]
+                LOGGER.info("Resolved location '%s' (query: '%s') to lat=%s, lon=%s", self.location, query, self.lat, self.lon)
+                return True
+            else:
+                LOGGER.error("No geocoding results found for location '%s' (query: '%s')", self.location, query)
+        except Exception as exc:
+            LOGGER.error("Failed to geocode location '%s': %s", self.location, exc)
+        return False
 
     def update(self) -> tuple[str, int] | None:
         """
-        Fetch the current weather data from OpenWeatherMap in JSON.
-        This method extracts temperature and weather description,
-        determines an icon, and returns (text, icon).
+        Fetch the current weather data from Open-Meteo.
+        Resolves coordinates first, then queries the forecast API,
+        rounds temperature, and maps the WMO code to an AWTRIX icon.
         """
+        if not self._resolve_coordinates():
+            return None
+
         try:
-            url = "https://api.openweathermap.org/data/2.5/weather"
+            url = "https://api.open-meteo.com/v1/forecast"
             params = {
-                "q": self.location,
-                "units": "metric",
-                "appid": self.api_key,
+                "latitude": self.lat,
+                "longitude": self.lon,
+                "current": "temperature_2m,weather_code",
+                "timezone": "auto"
             }
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
 
-            main = data["main"]
-            weather = data["weather"][0]
-            temp = round(main["temp"])
-            description = weather["description"]
-            icon = self.get_icon(weather["icon"], description)
+            current = data["current"]
+            temp = round(current["temperature_2m"])
+            weather_code = current["weather_code"]
+            icon = self.get_icon(weather_code)
             text = f"{temp}°C"
             return text, icon
         except requests.RequestException as exc:
-            LOGGER.error("Error retrieving weather data from OWM: %s", exc)
+            LOGGER.error("Error retrieving weather data from Open-Meteo: %s", exc)
             return None
         except (KeyError, TypeError, ValueError) as exc:
-            LOGGER.error("Invalid weather payload structure: %s", exc)
+            LOGGER.error("Invalid weather payload structure from Open-Meteo: %s", exc)
             return None
 
-    def get_icon(self, owm_icon_code: str, description: str) -> int:
+    def get_icon(self, weather_code: int) -> int:
         """
-        Determine an AWTRIX icon based on the OpenWeatherMap icon code
-        (e.g., "01d", "09n") or textual description.
-        Returns an integer icon that AWTRIX understands.
+        Determine an AWTRIX icon based on WMO weather code (WW).
         """
-        # OWM icon codes: https://openweathermap.org/weather-conditions
-        code = owm_icon_code.lower()
-        desc = description.lower()
-
-        if code.startswith("01"):  # clear sky
-            return 8953  # sun
-        elif code.startswith("02") or code.startswith("03") or code.startswith("04"):
-            return 91    # cloud
-        elif code.startswith("09") or code.startswith("10"):
+        # WMO Weather interpretation codes (WW): https://open-meteo.com/en/docs
+        if weather_code == 0:
+            return 8953  # sun (clear sky)
+        elif weather_code in (1, 2, 3, 45, 48):
+            return 91    # cloud (mainly clear, partly cloudy, overcast, fog)
+        elif weather_code in (51, 53, 55, 61, 63, 65, 80, 81, 82):
             return 24095 # rain cloud
-        elif code.startswith("11"):
-            return 11428 # thunderstorm
-        elif code.startswith("13"):
+        elif weather_code in (56, 57, 66, 67, 71, 73, 75, 77, 85, 86):
             return 2289  # snow
-        elif code.startswith("50"):
-            return 91    # mist/fog (fallback to cloud)
-        else:
-            # fallback by description
-            if "clear" in desc:
-                return 8953
-            if "rain" in desc:
-                return 24095
-            if "snow" in desc:
-                return 2289
-            if "thunder" in desc:
-                return 11428
-            return 91
+        elif weather_code in (95, 96, 99):
+            return 11428 # thunderstorm
+        return 91  # fallback to cloud
 
     def send(self, weather_info: tuple[str, int] | None) -> None:
         """
